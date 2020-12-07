@@ -190,6 +190,10 @@ public class JdbcCatalog extends BaseMetastoreCatalog implements Configurable, S
       if (tableDao.get(from).isEmpty()) {
         throw new NoSuchTableException("Failed to rename table! Table '%s' not found in the catalog!", from);
       }
+      JdbcNamespace nsDao = new JdbcNamespace(dbConn, catalogName);
+      if (!nsDao.isExists(to.namespace())) {
+        nsDao.save(to.namespace(), null);
+      }
       tableDao.updateTableName(from, to);
       if (!tableDao.isExists(to)) {
         throw new NoSuchTableException("Rename Operation Failed! Table '%s' not found after the rename!", to);
