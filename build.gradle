@@ -231,7 +231,7 @@ project(':iceberg-core') {
       exclude group: 'org.slf4j', module: 'slf4j-log4j12'
     }
 
-    testCompile "com.h2database:h2"
+    testRuntime "com.h2database:h2"
     testCompile project(path: ':iceberg-api', configuration: 'testArtifacts')
   }
 }
