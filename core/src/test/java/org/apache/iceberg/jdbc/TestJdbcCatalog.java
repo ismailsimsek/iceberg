@@ -62,6 +62,10 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
+import org.testcontainers.containers.MSSQLServerContainer;
+import org.testcontainers.containers.MySQLContainer;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 import static org.apache.iceberg.NullOrder.NULLS_FIRST;
 import static org.apache.iceberg.SortDirection.ASC;
@@ -117,6 +121,93 @@ public class TestJdbcCatalog {
     catalog = new JdbcCatalog();
     catalog.setConf(conf);
     catalog.initialize("test_jdbc_catalog", properties);
+  }
+
+  @Test
+  public void testMysqlCatalog() {
+    DockerImageName dbImage = DockerImageName.parse("mysql:5.6.51");
+    MySQLContainer<?> jdbcDb = new MySQLContainer<>(dbImage)
+        .withDatabaseName("mydatabase")
+        .withUsername("myuser")
+        .withPassword("mypassword");
+    jdbcDb.start();
+
+    Map<String, String> properties = new HashMap<>();
+    properties.put(CatalogProperties.URI, jdbcDb.getJdbcUrl());
+    properties.put(JdbcCatalog.PROPERTY_PREFIX + "user", jdbcDb.getUsername());
+    properties.put(JdbcCatalog.PROPERTY_PREFIX + "password", jdbcDb.getPassword());
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, this.tableDir.getAbsolutePath());
+
+    JdbcCatalog dbCatalog = new JdbcCatalog();
+    dbCatalog.setConf(conf);
+    dbCatalog.initialize("test_jdbc_catalog", properties);
+    dbCatalog.initialize("test_jdbc_catalog", properties);
+
+    TableIdentifier testTable = TableIdentifier.of("db", "ns1", "ns2", "tbl");
+    dbCatalog.createTable(testTable, SCHEMA, PartitionSpec.unpartitioned());
+    AssertHelpers.assertThrows("should throw exception", AlreadyExistsException.class,
+        "already exists", () ->
+            dbCatalog.createTable(testTable, SCHEMA, PartitionSpec.unpartitioned())
+    );
+
+    dbCatalog.dropTable(testTable);
+  }
+
+  @Test
+  public void testPostgreSQLCatalog() {
+    DockerImageName dbImage = DockerImageName.parse("postgres:9.6.12");
+    PostgreSQLContainer<?> jdbcDb = new PostgreSQLContainer<>(dbImage)
+        .withDatabaseName("mydatabase")
+        .withUsername("myuser")
+        .withPassword("mypassword");
+    jdbcDb.start();
+    Map<String, String> properties = new HashMap<>();
+    properties.put(CatalogProperties.URI, jdbcDb.getJdbcUrl());
+    properties.put(JdbcCatalog.PROPERTY_PREFIX + "user", jdbcDb.getUsername());
+    properties.put(JdbcCatalog.PROPERTY_PREFIX + "password", jdbcDb.getPassword());
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, this.tableDir.getAbsolutePath());
+
+    JdbcCatalog dbCatalog = new JdbcCatalog();
+    dbCatalog.setConf(conf);
+    dbCatalog.initialize("test_jdbc_catalog", properties);
+    dbCatalog.initialize("test_jdbc_catalog", properties);
+
+    TableIdentifier testTable = TableIdentifier.of("db", "ns1", "ns2", "tbl");
+    dbCatalog.createTable(testTable, SCHEMA, PartitionSpec.unpartitioned());
+    AssertHelpers.assertThrows("should throw exception", AlreadyExistsException.class,
+        "already exists", () ->
+            dbCatalog.createTable(testTable, SCHEMA, PartitionSpec.unpartitioned())
+    );
+
+    dbCatalog.dropTable(testTable);
+  }
+
+  @Test
+  public void testMSSQLCatalog() {
+    DockerImageName dbImage = DockerImageName.parse("mcr.microsoft.com/mssql/server:2017-latest");
+    MSSQLServerContainer<?> jdbcDb = new MSSQLServerContainer<>(dbImage)
+        .withPassword("my$Password!1234")
+        .acceptLicense();
+    jdbcDb.start();
+    Map<String, String> properties = new HashMap<>();
+    properties.put(CatalogProperties.URI, jdbcDb.getJdbcUrl());
+    properties.put(JdbcCatalog.PROPERTY_PREFIX + "user", jdbcDb.getUsername());
+    properties.put(JdbcCatalog.PROPERTY_PREFIX + "password", jdbcDb.getPassword());
+    properties.put(CatalogProperties.WAREHOUSE_LOCATION, this.tableDir.getAbsolutePath());
+
+    JdbcCatalog dbCatalog = new JdbcCatalog();
+    dbCatalog.setConf(conf);
+    dbCatalog.initialize("test_jdbc_catalog", properties);
+    dbCatalog.initialize("test_jdbc_catalog", properties);
+
+    TableIdentifier testTable = TableIdentifier.of("db", "ns1", "ns2", "tbl");
+    dbCatalog.createTable(testTable, SCHEMA, PartitionSpec.unpartitioned());
+    AssertHelpers.assertThrows("should throw exception", AlreadyExistsException.class,
+        "already exists", () ->
+            dbCatalog.createTable(testTable, SCHEMA, PartitionSpec.unpartitioned())
+    );
+
+    dbCatalog.dropTable(testTable);
   }
 
   @Test

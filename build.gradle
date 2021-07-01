@@ -230,6 +230,13 @@ project(':iceberg-core') {
     }
 
     testCompile "org.xerial:sqlite-jdbc"
+    testCompile "org.testcontainers:testcontainers"
+    testCompile "org.testcontainers:mysql"
+    testCompile "org.testcontainers:postgresql"
+    testCompile "org.testcontainers:mssqlserver"
+    testCompile "mysql:mysql-connector-java"
+    testCompile "org.postgresql:postgresql"
+    testCompile "com.microsoft.sqlserver:mssql-jdbc"
     testCompile project(path: ':iceberg-api', configuration: 'testArtifacts')
   }
 }
