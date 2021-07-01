@@ -32,3 +32,7 @@ org.apache.tez:tez-mapreduce = 0.8.4
 com.adobe.testing:s3mock-junit4 = 2.1.28
 org.assertj:assertj-core = 3.19.0
 org.xerial:sqlite-jdbc = 3.34.0
+org.testcontainers:* = 1.15.3
+mysql:mysql-connector-java = 8.0.23
+org.postgresql:postgresql = 42.2.22
+com.microsoft.sqlserver:mssql-jdbc = 9.2.1.jre8
