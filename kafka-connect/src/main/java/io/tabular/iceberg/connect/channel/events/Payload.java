@@ -16,10 +16,6 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.data;
+package io.tabular.iceberg.connect.channel.events;
 
-public enum Operation {
-  INSERT,
-  UPDATE,
-  DELETE
-}
+public interface Payload extends Element {}

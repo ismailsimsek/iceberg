@@ -16,10 +16,19 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.data;
+package io.tabular.iceberg.connect.channel.events;
 
-public enum Operation {
-  INSERT,
-  UPDATE,
-  DELETE
+public enum EventType {
+  COMMIT_REQUEST(0),
+  COMMIT_RESPONSE(1);
+
+  private final int id;
+
+  EventType(int id) {
+    this.id = id;
+  }
+
+  public int getId() {
+    return id;
+  }
 }
