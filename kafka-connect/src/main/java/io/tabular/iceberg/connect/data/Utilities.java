@@ -25,6 +25,8 @@ import static org.apache.iceberg.TableProperties.WRITE_TARGET_FILE_SIZE_BYTES_DE
 
 import io.tabular.iceberg.connect.IcebergSinkConfig;
 import java.lang.reflect.InvocationTargetException;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import org.apache.iceberg.CatalogUtil;
 import org.apache.iceberg.FileFormat;
@@ -36,8 +38,11 @@ import org.apache.iceberg.io.FileAppenderFactory;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.io.TaskWriter;
 import org.apache.iceberg.io.UnpartitionedWriter;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.relocated.com.google.common.primitives.Ints;
+import org.apache.iceberg.types.TypeUtil;
 import org.apache.iceberg.util.PropertyUtil;
+import org.apache.kafka.connect.data.Struct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,8 +51,8 @@ public class Utilities {
   private static final Logger LOG = LoggerFactory.getLogger(Utilities.class.getName());
 
   public static Catalog loadCatalog(IcebergSinkConfig config) {
-    return CatalogUtil.loadCatalog(
-        config.getCatalogImpl(), "iceberg", config.getCatalogProps(), getHadoopConfig());
+    return CatalogUtil.buildIcebergCatalog(
+        config.getCatalogName(), config.getCatalogProps(), getHadoopConfig());
   }
 
   private static Object getHadoopConfig() {
@@ -66,6 +71,17 @@ public class Utilities {
     return null;
   }
 
+  public static Object extractFromRecordValue(Object recordValue, String fieldName) {
+    if (recordValue instanceof Struct) {
+      return ((Struct) recordValue).get(fieldName);
+    } else if (recordValue instanceof Map) {
+      return ((Map<?, ?>) recordValue).get(fieldName);
+    } else {
+      throw new UnsupportedOperationException(
+          "Cannot extract value from type: " + recordValue.getClass().getName());
+    }
+  }
+
   public static TaskWriter<Record> createTableWriter(Table table, IcebergSinkConfig config) {
     String formatStr =
         table.properties().getOrDefault(DEFAULT_FILE_FORMAT, DEFAULT_FILE_FORMAT_DEFAULT);
@@ -75,13 +91,23 @@ public class Utilities {
         PropertyUtil.propertyAsLong(
             table.properties(), WRITE_TARGET_FILE_SIZE_BYTES, WRITE_TARGET_FILE_SIZE_BYTES_DEFAULT);
 
-    FileAppenderFactory<Record> appenderFactory =
-        new GenericAppenderFactory(
-            table.schema(),
-            table.spec(),
-            Ints.toArray(table.schema().identifierFieldIds()),
-            table.schema(),
-            null);
+    Set<Integer> equalityFieldIds = table.schema().identifierFieldIds();
+
+    FileAppenderFactory<Record> appenderFactory;
+    if (equalityFieldIds == null || equalityFieldIds.isEmpty()) {
+      appenderFactory =
+          new GenericAppenderFactory(table.schema(), table.spec(), null, null, null)
+              .setAll(table.properties());
+    } else {
+      appenderFactory =
+          new GenericAppenderFactory(
+                  table.schema(),
+                  table.spec(),
+                  Ints.toArray(equalityFieldIds),
+                  TypeUtil.select(table.schema(), Sets.newHashSet(equalityFieldIds)),
+                  null)
+              .setAll(table.properties());
+    }
 
     // (partition ID + task ID + operation ID) must be unique
     OutputFileFactory fileFactory =
