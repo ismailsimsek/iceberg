@@ -18,144 +18,252 @@
  */
 package io.tabular.iceberg.connect;
 
-import static java.lang.String.format;
+import static io.tabular.iceberg.connect.TestEvent.TEST_SCHEMA;
+import static io.tabular.iceberg.connect.TestEvent.TEST_SCHEMA_NO_ID;
+import static io.tabular.iceberg.connect.TestEvent.TEST_SPEC;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.assertj.core.api.Assertions.fail;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Date;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-import org.apache.iceberg.CatalogProperties;
+import java.util.Map;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.aws.AwsProperties;
 import org.apache.iceberg.catalog.Namespace;
+import org.apache.iceberg.catalog.SupportsNamespaces;
 import org.apache.iceberg.catalog.TableIdentifier;
-import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.apache.iceberg.rest.RESTCatalog;
+import org.apache.iceberg.exceptions.NoSuchTableException;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
-import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.iceberg.types.Types.LongType;
+import org.apache.iceberg.types.Types.StringType;
+import org.apache.iceberg.types.Types.TimestampType;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.NullSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 public class IntegrationTest extends IntegrationTestBase {
 
-  private static final String CONNECTOR_NAME = "test_connector";
-  private static final String TEST_TOPIC = "test-topic";
-  private static final String CONTROL_GROUP_ID = "control-cg";
-  private static final String CONTROL_TOPIC = "control-topic";
-  private static final String TEST_DB = "default";
+  private static final String TEST_DB = "test";
   private static final String TEST_TABLE = "foobar";
   private static final TableIdentifier TABLE_IDENTIFIER = TableIdentifier.of(TEST_DB, TEST_TABLE);
-  private static final Schema TEST_SCHEMA =
-      new Schema(
-          Types.NestedField.required(1, "id", Types.LongType.get()),
-          Types.NestedField.required(2, "type", Types.StringType.get()),
-          Types.NestedField.required(3, "ts", Types.TimestampType.withoutZone()),
-          Types.NestedField.required(4, "payload", Types.StringType.get()));
-  private static final PartitionSpec TEST_SPEC =
-      PartitionSpec.builderFor(TEST_SCHEMA).day("ts").build();
-
-  private static final String RECORD_FORMAT =
-      "{\"id\":%d,\"type\":\"%s\",\"ts\":%d,\"payload\":\"%s\"}";
 
   @BeforeEach
-  public void setup() {
-    createTopic(TEST_TOPIC, 2);
-    catalog.createNamespace(Namespace.of(TEST_DB));
+  public void before() {
+    createTopic(testTopic, TEST_TOPIC_PARTITIONS);
+    ((SupportsNamespaces) catalog).createNamespace(Namespace.of(TEST_DB));
   }
 
   @AfterEach
-  public void teardown() {
-    deleteTopic(TEST_TOPIC);
+  public void after() {
+    context.stopConnector(connectorName);
+    deleteTopic(testTopic);
     catalog.dropTable(TableIdentifier.of(TEST_DB, TEST_TABLE));
-    catalog.dropNamespace(Namespace.of(TEST_DB));
+    ((SupportsNamespaces) catalog).dropNamespace(Namespace.of(TEST_DB));
   }
 
-  @Test
-  public void testIcebergSink() throws Exception {
+  @ParameterizedTest
+  @NullSource
+  @ValueSource(strings = "test_branch")
+  public void testIcebergSinkPartitionedTable(String branch) {
+    catalog.createTable(TABLE_IDENTIFIER, TEST_SCHEMA, TEST_SPEC);
+
+    boolean useSchema = branch == null; // use a schema for one of the tests
+    runTest(branch, useSchema, ImmutableMap.of());
+
+    List<DataFile> files = dataFiles(TABLE_IDENTIFIER, branch);
+    // partition may involve 1 or 2 workers
+    assertThat(files).hasSizeBetween(1, 2);
+    assertThat(files.get(0).recordCount()).isEqualTo(1);
+    assertThat(files.get(1).recordCount()).isEqualTo(1);
+    assertSnapshotProps(TABLE_IDENTIFIER, branch);
+  }
+
+  @ParameterizedTest
+  @NullSource
+  @ValueSource(strings = "test_branch")
+  public void testIcebergSinkUnpartitionedTable(String branch) {
+    catalog.createTable(TABLE_IDENTIFIER, TEST_SCHEMA);
+
+    boolean useSchema = branch == null; // use a schema for one of the tests
+    runTest(branch, useSchema, ImmutableMap.of());
+
+    List<DataFile> files = dataFiles(TABLE_IDENTIFIER, branch);
+    // may involve 1 or 2 workers
+    assertThat(files).hasSizeBetween(1, 2);
+    assertThat(files.stream().mapToLong(DataFile::recordCount).sum()).isEqualTo(2);
+    assertSnapshotProps(TABLE_IDENTIFIER, branch);
+  }
+
+  @ParameterizedTest
+  @NullSource
+  @ValueSource(strings = "test_branch")
+  public void testIcebergSinkSchemaEvolution(String branch) {
+    Schema initialSchema =
+        new Schema(
+            ImmutableList.of(
+                Types.NestedField.required(1, "id", Types.IntegerType.get()),
+                Types.NestedField.required(2, "type", Types.StringType.get())));
+    catalog.createTable(TABLE_IDENTIFIER, initialSchema);
+
+    boolean useSchema = branch == null; // use a schema for one of the tests
+    runTest(branch, useSchema, ImmutableMap.of("iceberg.tables.evolve-schema-enabled", "true"));
+
+    List<DataFile> files = dataFiles(TABLE_IDENTIFIER, branch);
+    // may involve 1 or 2 workers
+    assertThat(files).hasSizeBetween(1, 2);
+    assertThat(files.stream().mapToLong(DataFile::recordCount).sum()).isEqualTo(2);
+    assertSnapshotProps(TABLE_IDENTIFIER, branch);
+
+    // when not using a value schema, the ID data type will not be updated
+    Class<? extends Type> expectedIdType =
+        useSchema ? Types.LongType.class : Types.IntegerType.class;
+
+    assertGeneratedSchema(useSchema, expectedIdType);
+  }
+
+  @ParameterizedTest
+  @NullSource
+  @ValueSource(strings = "test_branch")
+  public void testIcebergSinkAutoCreate(String branch) {
+    boolean useSchema = branch == null; // use a schema for one of the tests
+
+    Map<String, String> extraConfig = Maps.newHashMap();
+    extraConfig.put("iceberg.tables.auto-create-enabled", "true");
+    if (useSchema) {
+      // partition the table for one of the tests
+      extraConfig.put("iceberg.tables.default-partition-by", "hour(ts)");
+    }
+
+    runTest(branch, useSchema, extraConfig);
+
+    List<DataFile> files = dataFiles(TABLE_IDENTIFIER, branch);
+    // may involve 1 or 2 workers
+    assertThat(files).hasSizeBetween(1, 2);
+    assertThat(files.stream().mapToLong(DataFile::recordCount).sum()).isEqualTo(2);
+    assertSnapshotProps(TABLE_IDENTIFIER, branch);
+
+    assertGeneratedSchema(useSchema, LongType.class);
+
+    PartitionSpec spec = catalog.loadTable(TABLE_IDENTIFIER).spec();
+    assertThat(spec.isPartitioned()).isEqualTo(useSchema);
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  public void testIcebergSinkUnpartitionedUpsert(boolean hasSchemaIdCols) {
+    runUpsertTest(hasSchemaIdCols, PartitionSpec.unpartitioned());
+  }
+
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  public void testIcebergSinkPartitionedUpsert(boolean hasSchemaIdCols) {
+    runUpsertTest(hasSchemaIdCols, TEST_SPEC);
+  }
+
+  private void runUpsertTest(boolean hasSchemaIdCols, PartitionSpec spec) {
+    Map<String, String> extraConfig = Maps.newHashMap();
+    extraConfig.put("iceberg.tables.upsert-mode-enabled", "true");
+    if (hasSchemaIdCols) {
+      catalog.createTable(
+          TABLE_IDENTIFIER, TEST_SCHEMA, spec, ImmutableMap.of("format-version", "2"));
+    } else {
+      extraConfig.put("iceberg.tables.default-id-columns", "id");
+      catalog.createTable(
+          TABLE_IDENTIFIER, TEST_SCHEMA_NO_ID, spec, ImmutableMap.of("format-version", "2"));
+    }
+
+    runTest(null, true, extraConfig);
+
+    List<DataFile> files = dataFiles(TABLE_IDENTIFIER, null);
+    // may involve 1 or 2 workers
+    assertThat(files).hasSizeBetween(1, 2);
+    assertThat(files.stream().mapToLong(DataFile::recordCount).sum()).isEqualTo(2);
+
+    // may involve 1 or 2 workers
+    List<DeleteFile> deleteFiles = deleteFiles(TABLE_IDENTIFIER, null);
+    assertThat(deleteFiles).hasSizeBetween(1, 2);
+    assertThat(deleteFiles.stream().mapToLong(DeleteFile::recordCount).sum()).isEqualTo(2);
+
+    assertSnapshotProps(TABLE_IDENTIFIER, null);
+  }
+
+  private void assertGeneratedSchema(boolean useSchema, Class<? extends Type> expectedIdType) {
+    Schema tableSchema = catalog.loadTable(TABLE_IDENTIFIER).schema();
+    assertThat(tableSchema.findField("id").type()).isInstanceOf(expectedIdType);
+    assertThat(tableSchema.findField("type").type()).isInstanceOf(StringType.class);
+    assertThat(tableSchema.findField("payload").type()).isInstanceOf(StringType.class);
+
+    if (!useSchema) {
+      // without a schema we can only map the primitive type
+      assertThat(tableSchema.findField("ts").type()).isInstanceOf(LongType.class);
+      // null values should be ignored when not using a value schema
+      assertThat(tableSchema.findField("op")).isNull();
+    } else {
+      assertThat(tableSchema.findField("ts").type()).isInstanceOf(TimestampType.class);
+      assertThat(tableSchema.findField("op").type()).isInstanceOf(StringType.class);
+    }
+  }
+
+  private void runTest(String branch, boolean useSchema, Map<String, String> extraConfig) {
     // set offset reset to earliest so we don't miss any test messages
-    // TODO: get bootstrap.servers from worker properties?
     KafkaConnectContainer.Config connectorConfig =
-        new KafkaConnectContainer.Config(CONNECTOR_NAME)
-            .config("topics", TEST_TOPIC)
+        new KafkaConnectContainer.Config(connectorName)
+            .config("topics", testTopic)
             .config("connector.class", IcebergSinkConnector.class.getName())
             .config("tasks.max", 2)
             .config("consumer.override.auto.offset.reset", "earliest")
             .config("key.converter", "org.apache.kafka.connect.json.JsonConverter")
             .config("key.converter.schemas.enable", false)
             .config("value.converter", "org.apache.kafka.connect.json.JsonConverter")
-            .config("value.converter.schemas.enable", false)
-            .config("iceberg.kafka.bootstrap.servers", kafka.getNetworkAliases().get(0) + ":9092")
-            .config("iceberg.tables", format("%s.%s", TEST_DB, TEST_TABLE))
-            .config("iceberg.control.group.id", CONTROL_GROUP_ID)
-            .config("iceberg.control.topic", CONTROL_TOPIC)
-            .config("iceberg.control.commitIntervalMs", 1000)
-            .config("iceberg.control.commitTimeoutMs", 1000)
-            .config("iceberg.catalog", RESTCatalog.class.getName())
-            .config("iceberg.catalog." + CatalogProperties.URI, "http://iceberg:8181")
-            .config("iceberg.catalog." + AwsProperties.S3FILEIO_ENDPOINT, "http://minio:9000")
-            .config("iceberg.catalog." + AwsProperties.S3FILEIO_ACCESS_KEY_ID, AWS_ACCESS_KEY)
-            .config("iceberg.catalog." + AwsProperties.S3FILEIO_SECRET_ACCESS_KEY, AWS_SECRET_KEY)
-            .config("iceberg.catalog." + AwsProperties.S3FILEIO_PATH_STYLE_ACCESS, true)
-            .config("iceberg.catalog." + AwsProperties.CLIENT_REGION, AWS_REGION)
-            .config(
-                "iceberg.catalog." + AwsProperties.HTTP_CLIENT_TYPE,
-                AwsProperties.HTTP_CLIENT_TYPE_APACHE);
+            .config("value.converter.schemas.enable", useSchema)
+            .config("iceberg.tables", String.format("%s.%s", TEST_DB, TEST_TABLE))
+            .config("iceberg.control.commit.interval-ms", 1000)
+            .config("iceberg.control.commit.timeout-ms", Integer.MAX_VALUE)
+            .config("iceberg.kafka.auto.offset.reset", "earliest");
 
-    // partitioned table
+    context.connectorCatalogProperties().forEach(connectorConfig::config);
 
-    catalog.createTable(TABLE_IDENTIFIER, TEST_SCHEMA, TEST_SPEC);
+    if (branch != null) {
+      connectorConfig.config("iceberg.tables.default-commit-branch", branch);
+    }
 
-    kafkaConnect.registerConnector(connectorConfig);
-    kafkaConnect.ensureConnectorRunning(CONNECTOR_NAME);
+    extraConfig.forEach(connectorConfig::config);
 
-    runTest();
+    context.startConnector(connectorConfig);
 
-    List<DataFile> files = getDataFiles();
-    assertThat(files).hasSize(2);
-    assertEquals(1, files.get(0).recordCount());
-    assertEquals(1, files.get(1).recordCount());
+    TestEvent event1 = new TestEvent(1, "type1", new Date(), "hello world!");
 
-    // unpartitioned table
+    Date threeDaysAgo = Date.from(Instant.now().minus(Duration.ofDays(3)));
+    TestEvent event2 = new TestEvent(2, "type2", threeDaysAgo, "having fun?");
 
-    catalog.dropTable(TABLE_IDENTIFIER);
-    catalog.createTable(TABLE_IDENTIFIER, TEST_SCHEMA);
+    send(testTopic, event1, useSchema);
+    send(testTopic, event2, useSchema);
+    flush();
 
-    // wait for the flush so the writer will refresh the table...
-    Thread.sleep(2000);
-
-    runTest();
-
-    files = getDataFiles();
-    assertThat(files).hasSize(1);
-    assertEquals(2, files.get(0).recordCount());
-  }
-
-  private void runTest() {
-    String event1 = format(RECORD_FORMAT, 1, "type1", System.currentTimeMillis(), "hello world!");
-
-    long threeDaysAgo = System.currentTimeMillis() - Duration.ofDays(3).toMillis();
-    String event2 = format(RECORD_FORMAT, 2, "type2", threeDaysAgo, "having fun?");
-
-    producer.send(new ProducerRecord<>(TEST_TOPIC, event1));
-    producer.send(new ProducerRecord<>(TEST_TOPIC, event2));
-    producer.flush();
-
-    Awaitility.await().atMost(15, TimeUnit.SECONDS).untilAsserted(this::assertSnapshotAdded);
+    Awaitility.await()
+        .atMost(Duration.ofSeconds(30))
+        .pollInterval(Duration.ofSeconds(1))
+        .untilAsserted(this::assertSnapshotAdded);
   }
 
   private void assertSnapshotAdded() {
-    Table table = catalog.loadTable(TABLE_IDENTIFIER);
-    assertThat(table.snapshots()).hasSize(1);
-  }
-
-  private List<DataFile> getDataFiles() {
-    Table table = catalog.loadTable(TABLE_IDENTIFIER);
-    return Lists.newArrayList(table.currentSnapshot().addedDataFiles(table.io()));
+    try {
+      Table table = catalog.loadTable(TABLE_IDENTIFIER);
+      assertThat(table.snapshots()).hasSize(1);
+    } catch (NoSuchTableException e) {
+      fail("Table should exist");
+    }
   }
 }
