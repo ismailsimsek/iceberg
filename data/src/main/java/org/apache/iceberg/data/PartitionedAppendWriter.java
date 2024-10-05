@@ -16,25 +16,23 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.iceberg.connect.data;
+package org.apache.iceberg.data;
 
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.PartitionKey;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
-import org.apache.iceberg.data.InternalRecordWrapper;
-import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.FileAppenderFactory;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.OutputFileFactory;
 import org.apache.iceberg.io.PartitionedFanoutWriter;
 
-class PartitionedAppendWriter extends PartitionedFanoutWriter<Record> {
+public class PartitionedAppendWriter extends PartitionedFanoutWriter<Record> {
 
   private final PartitionKey partitionKey;
   private final InternalRecordWrapper wrapper;
 
-  PartitionedAppendWriter(
+  public PartitionedAppendWriter(
       PartitionSpec spec,
       FileFormat format,
       FileAppenderFactory<Record> appenderFactory,

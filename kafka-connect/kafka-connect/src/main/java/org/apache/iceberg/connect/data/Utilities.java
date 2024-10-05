@@ -39,6 +39,7 @@ import org.apache.iceberg.common.DynMethods;
 import org.apache.iceberg.common.DynMethods.BoundMethod;
 import org.apache.iceberg.connect.IcebergSinkConfig;
 import org.apache.iceberg.data.GenericAppenderFactory;
+import org.apache.iceberg.data.PartitionedAppendWriter;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.FileAppenderFactory;
 import org.apache.iceberg.io.OutputFileFactory;
