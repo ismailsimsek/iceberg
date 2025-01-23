@@ -18,18 +18,16 @@
  */
 package org.apache.iceberg.connect.data;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import org.apache.iceberg.connect.IcebergSinkConfig;
-import org.apache.iceberg.connect.data.BaseWriterTest;
-import org.apache.iceberg.connect.data.PartitionedDeltaWriter;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.WriteResult;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class PartitionedDeltaWriterTest extends BaseWriterTest {
 
@@ -55,7 +53,7 @@ public class PartitionedDeltaWriterTest extends BaseWriterTest {
 
     // in upsert mode, each write is a delete + append, so we'll have 1 data file
     // and 1 delete file for each partition (2 total)
-    assertEquals(2, result.dataFiles().length);
-    assertEquals(2, result.deleteFiles().length);
+    assertThat(result.dataFiles()).hasSize(2);
+    assertThat(result.deleteFiles()).hasSize(2);
   }
 }

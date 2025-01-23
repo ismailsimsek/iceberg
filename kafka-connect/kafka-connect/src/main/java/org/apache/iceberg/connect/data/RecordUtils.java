@@ -154,10 +154,25 @@ class RecordUtils {
 
     TaskWriter<Record> writer;
     if (table.spec().isUnpartitioned()) {
+      if (config.tablesCdcField() == null && !config.isUpsertMode()) {
       writer =
           new UnpartitionedWriter<>(
               table.spec(), format, appenderFactory, fileFactory, table.io(), targetFileSize);
     } else {
+        writer =
+            new UnpartitionedDeltaWriter(
+                table.spec(),
+                format,
+                appenderFactory,
+                fileFactory,
+                table.io(),
+                targetFileSize,
+                table.schema(),
+                identifierFieldIds,
+                config.isUpsertMode());
+      }
+    } else {
+      if (config.tablesCdcField() == null && !config.isUpsertMode()) {
       writer =
           new PartitionedAppendWriter(
               table.spec(),
@@ -167,6 +182,19 @@ class RecordUtils {
               table.io(),
               targetFileSize,
               table.schema());
+      } else {
+        writer =
+            new PartitionedDeltaWriter(
+                table.spec(),
+                format,
+                appenderFactory,
+                fileFactory,
+                table.io(),
+                targetFileSize,
+                table.schema(),
+                identifierFieldIds,
+                config.isUpsertMode());
+      }
     }
     return writer;
   }
