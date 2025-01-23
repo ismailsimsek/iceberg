@@ -18,7 +18,10 @@
  */
 package org.apache.iceberg.connect.data;
 
-import io.tabular.iceberg.connect.IcebergSinkConfig;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
@@ -26,6 +29,7 @@ import org.apache.iceberg.LocationProviders;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.connect.IcebergSinkConfig;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.encryption.PlaintextEncryptionManager;
 import org.apache.iceberg.inmemory.InMemoryFileIO;
@@ -36,10 +40,6 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.BeforeEach;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 public class BaseWriterTest {
 
@@ -58,7 +58,7 @@ public class BaseWriterTest {
       PartitionSpec.builderFor(SCHEMA).identity("data").build();
 
   @BeforeEach
-  public void setup() {
+  public void before() {
     fileIO = new InMemoryFileIO();
 
     table = mock(Table.class);
@@ -67,14 +67,14 @@ public class BaseWriterTest {
     when(table.io()).thenReturn(fileIO);
     when(table.locationProvider())
         .thenReturn(LocationProviders.locationsFor("file", ImmutableMap.of()));
-    when(table.encryption()).thenReturn(new PlaintextEncryptionManager());
+    when(table.encryption()).thenReturn(PlaintextEncryptionManager.instance());
     when(table.properties()).thenReturn(ImmutableMap.of());
   }
 
   protected WriteResult writeTest(
       List<Record> rows, IcebergSinkConfig config, Class<?> expectedWriterClass) {
-    try (TaskWriter<Record> writer = Utilities.createTableWriter(table, config)) {
-      assertEquals(expectedWriterClass, writer.getClass());
+    try (TaskWriter<Record> writer = RecordUtils.createTableWriter(table, "name", config)) {
+      assertThat(writer.getClass()).isEqualTo(expectedWriterClass);
 
       rows.forEach(
           row -> {

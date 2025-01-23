@@ -18,39 +18,96 @@
  */
 package org.apache.iceberg.connect;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.kafka.common.config.ConfigException;
 import org.junit.jupiter.api.Test;
-
-import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 public class IcebergSinkConfigTest {
 
   @Test
   public void testGetVersion() {
-    String version = IcebergSinkConfig.getVersion();
-    assertNotNull(version);
+    String version = IcebergSinkConfig.version();
+    assertThat(version).isNotNull();
   }
 
   @Test
-  public void testMissingRequired() {
-    Map<String, String> props = ImmutableMap.of();
-    assertThatExceptionOfType(ConfigException.class).isThrownBy(() -> new IcebergSinkConfig(props));
+  public void testInvalid() {
+    Map<String, String> props =
+        ImmutableMap.of(
+            "topics", "source-topic",
+            "iceberg.catalog.type", "rest",
+            "iceberg.tables", "db.landing",
+            "iceberg.tables.dynamic-enabled", "true");
+    assertThatThrownBy(() -> new IcebergSinkConfig(props))
+        .isInstanceOf(ConfigException.class)
+        .hasMessage("Cannot specify both static and dynamic table names");
   }
 
   @Test
   public void testGetDefault() {
     Map<String, String> props =
         ImmutableMap.of(
+            "iceberg.catalog.type", "rest",
             "topics", "source-topic",
-            "iceberg.tables", "db.landing",
-            "iceberg.catalog", RESTCatalog.class.getName(),
-            "iceberg.control.topic", "control-topic",
-            "iceberg.control.group.id", "control-group");
+            "iceberg.tables", "db.landing");
     IcebergSinkConfig config = new IcebergSinkConfig(props);
-    assertEquals(60_000, config.getCommitIntervalMs());
+    assertThat(config.commitIntervalMs()).isEqualTo(300_000);
+  }
+
+  @Test
+  public void testStringToList() {
+    List<String> result = IcebergSinkConfig.stringToList(null, ",");
+    assertThat(result).isEmpty();
+
+    result = IcebergSinkConfig.stringToList("", ",");
+    assertThat(result).isEmpty();
+
+    result = IcebergSinkConfig.stringToList("one ", ",");
+    assertThat(result).contains("one");
+
+    result = IcebergSinkConfig.stringToList("one, two", ",");
+    assertThat(result).contains("one", "two");
+
+    result = IcebergSinkConfig.stringToList("bucket(id, 4)", ",");
+    assertThat(result).contains("bucket(id", "4)");
+
+    result =
+        IcebergSinkConfig.stringToList("bucket(id, 4)", IcebergSinkConfig.COMMA_NO_PARENS_REGEX);
+    assertThat(result).contains("bucket(id, 4)");
+
+    result =
+        IcebergSinkConfig.stringToList(
+            "bucket(id, 4), type", IcebergSinkConfig.COMMA_NO_PARENS_REGEX);
+    assertThat(result).contains("bucket(id, 4)", "type");
+  }
+
+  @Test
+  public void testStringWithParensToList() {}
+
+  @Test
+  public void testCheckClassName() {
+    Boolean result =
+        IcebergSinkConfig.checkClassName("org.apache.kafka.connect.cli.ConnectDistributed");
+    assertThat(result).isTrue();
+
+    result = IcebergSinkConfig.checkClassName("org.apache.kafka.connect.cli.ConnectStandalone");
+    assertThat(result).isTrue();
+
+    result = IcebergSinkConfig.checkClassName("some.other.package.ConnectDistributed");
+    assertThat(result).isTrue();
+
+    result = IcebergSinkConfig.checkClassName("some.other.package.ConnectStandalone");
+    assertThat(result).isTrue();
+
+    result = IcebergSinkConfig.checkClassName("some.package.ConnectDistributedWrapper");
+    assertThat(result).isTrue();
+
+    result = IcebergSinkConfig.checkClassName("org.apache.kafka.clients.producer.KafkaProducer");
+    assertThat(result).isFalse();
   }
 }

@@ -18,22 +18,31 @@
  */
 package org.apache.iceberg.connect.data;
 
-import io.tabular.iceberg.connect.IcebergSinkConfig;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.connect.IcebergSinkConfig;
+import org.apache.iceberg.connect.TableSinkConfig;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.UnpartitionedWriter;
 import org.apache.iceberg.io.WriteResult;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
-import org.junit.jupiter.api.Test;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.mock;
+import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 public class UnpartitionedWriterTest extends BaseWriterTest {
 
-  @Test
-  public void testUnpartitionedWriter() {
+  @ParameterizedTest
+  @ValueSource(strings = {"parquet", "orc"})
+  public void testUnpartitionedWriter(String format) {
     IcebergSinkConfig config = mock(IcebergSinkConfig.class);
+    when(config.tableConfig(any())).thenReturn(mock(TableSinkConfig.class));
+    when(config.writeProps()).thenReturn(ImmutableMap.of("write.format.default", format));
 
     Record row1 = GenericRecord.create(SCHEMA);
     row1.setField("id", 123L);
@@ -47,7 +56,8 @@ public class UnpartitionedWriterTest extends BaseWriterTest {
 
     WriteResult result = writeTest(ImmutableList.of(row1, row2), config, UnpartitionedWriter.class);
 
-    assertEquals(1, result.dataFiles().length);
-    assertEquals(0, result.deleteFiles().length);
+    assertThat(result.dataFiles()).hasSize(1);
+    assertThat(result.dataFiles()).allMatch(file -> file.format() == FileFormat.fromString(format));
+    assertThat(result.deleteFiles()).hasSize(0);
   }
 }

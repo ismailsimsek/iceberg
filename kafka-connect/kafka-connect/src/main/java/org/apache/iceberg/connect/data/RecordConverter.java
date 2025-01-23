@@ -30,83 +30,92 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.Temporal;
 import java.util.Base64;
-import java.util.HashMap;
+import java.util.Date;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import org.apache.iceberg.FileFormat;
+import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.TableProperties;
+import org.apache.iceberg.connect.IcebergSinkConfig;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.mapping.MappedField;
 import org.apache.iceberg.mapping.NameMapping;
 import org.apache.iceberg.mapping.NameMappingParser;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.types.Type;
+import org.apache.iceberg.types.Type.PrimitiveType;
 import org.apache.iceberg.types.Types.DecimalType;
 import org.apache.iceberg.types.Types.ListType;
 import org.apache.iceberg.types.Types.MapType;
 import org.apache.iceberg.types.Types.NestedField;
 import org.apache.iceberg.types.Types.StructType;
 import org.apache.iceberg.types.Types.TimestampType;
+import org.apache.iceberg.util.ByteBuffers;
 import org.apache.iceberg.util.DateTimeUtil;
+import org.apache.iceberg.util.UUIDUtil;
 import org.apache.kafka.connect.data.Struct;
-import org.apache.kafka.connect.json.JsonConverter;
-import org.apache.kafka.connect.json.JsonConverterConfig;
-import org.apache.kafka.connect.storage.ConverterConfig;
-import org.apache.kafka.connect.storage.ConverterType;
+import org.apache.kafka.connect.errors.ConnectException;
 
-import static java.time.format.DateTimeFormatter.ISO_LOCAL_DATE_TIME;
-import static java.time.format.DateTimeFormatter.ISO_OFFSET_DATE_TIME;
-import static java.util.stream.Collectors.toList;
-
-public class RecordConverter {
+class RecordConverter {
 
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
-  private final StructType tableSchema;
-  private final NameMapping nameMapping;
-  private final JsonConverter jsonConverter;
+  private static final DateTimeFormatter OFFSET_TIMESTAMP_FORMAT =
+      new DateTimeFormatterBuilder()
+          .append(DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+          .appendOffset("+HHmm", "Z")
+          .toFormatter(Locale.ROOT);
 
-  public RecordConverter(Table table) {
-    this.tableSchema = table.schema().asStruct();
-    this.nameMapping = getNameMapping(table);
-    this.jsonConverter = new JsonConverter();
-    jsonConverter.configure(
-        ImmutableMap.of(
-            JsonConverterConfig.SCHEMAS_ENABLE_CONFIG,
-            false,
-            ConverterConfig.TYPE_CONFIG,
-            ConverterType.VALUE.getName()));
+  private final Schema tableSchema;
+  private final NameMapping nameMapping;
+  private final IcebergSinkConfig config;
+  private final Map<Integer, Map<String, NestedField>> structNameMap = Maps.newHashMap();
+
+  RecordConverter(Table table, IcebergSinkConfig config) {
+    this.tableSchema = table.schema();
+    this.nameMapping = createNameMapping(table);
+    this.config = config;
   }
 
-  public Record convert(Object data) {
+  Record convert(Object data) {
+    return convert(data, null);
+  }
+
+  Record convert(Object data, SchemaUpdate.Consumer schemaUpdateConsumer) {
     if (data instanceof Struct || data instanceof Map) {
-      return convertStructValue(data, tableSchema);
+      return convertStructValue(data, tableSchema.asStruct(), -1, schemaUpdateConsumer);
     }
     throw new UnsupportedOperationException("Cannot convert type: " + data.getClass().getName());
   }
 
-  private NameMapping getNameMapping(Table table) {
+  private NameMapping createNameMapping(Table table) {
     String nameMappingString = table.properties().get(TableProperties.DEFAULT_NAME_MAPPING);
     return nameMappingString != null ? NameMappingParser.fromJson(nameMappingString) : null;
   }
 
-  private Object convertValue(Object value, Type type) {
+  private Object convertValue(
+      Object value, Type type, int fieldId, SchemaUpdate.Consumer schemaUpdateConsumer) {
     if (value == null) {
       return null;
     }
     switch (type.typeId()) {
       case STRUCT:
-        return convertStructValue(value, type.asStructType());
+        return convertStructValue(value, type.asStructType(), fieldId, schemaUpdateConsumer);
       case LIST:
-        return convertListValue(value, type.asListType());
+        return convertListValue(value, type.asListType(), schemaUpdateConsumer);
       case MAP:
-        return convertMapValue(value, type.asMapType());
+        return convertMapValue(value, type.asMapType(), schemaUpdateConsumer);
       case INTEGER:
         return convertInt(value);
       case LONG:
@@ -124,8 +133,9 @@ public class RecordConverter {
       case UUID:
         return convertUUID(value);
       case BINARY:
-      case FIXED:
         return convertBase64Binary(value);
+      case FIXED:
+        return ByteBuffers.toByteArray(convertBase64Binary(value));
       case DATE:
         return convertDateValue(value);
       case TIME:
@@ -136,61 +146,166 @@ public class RecordConverter {
     throw new UnsupportedOperationException("Unsupported type: " + type.typeId());
   }
 
-  protected GenericRecord convertStructValue(Object value, StructType schema) {
-    GenericRecord record = GenericRecord.create(schema);
-    schema
-        .fields()
-        .forEach(
-            field -> {
-              Object fieldVal = getValueFromStruct(value, field);
-              if (fieldVal != null) {
-                record.setField(field.name(), convertValue(fieldVal, field.type()));
-              }
-            });
-    return record;
-  }
-
-  private Object getValueFromStruct(Object value, NestedField field) {
-    MappedField mappedField = nameMapping == null ? null : nameMapping.find(field.fieldId());
-
-    if (mappedField == null || mappedField.names().isEmpty()) {
-      // if no name mappings then use the field name in the schema
-      return getFieldValue(value, field.name());
-    }
-
-    for (String fieldName : mappedField.names()) {
-      Object result = getFieldValue(value, fieldName);
-      if (result != null) {
-        return result;
-      }
-    }
-
-    return null; // no field matches in the source
-  }
-
-  private Object getFieldValue(Object value, String fieldName) {
+  protected GenericRecord convertStructValue(
+      Object value,
+      StructType schema,
+      int parentFieldId,
+      SchemaUpdate.Consumer schemaUpdateConsumer) {
     if (value instanceof Map) {
-      return ((Map<?, ?>) value).get(fieldName);
+      return convertToStruct((Map<?, ?>) value, schema, parentFieldId, schemaUpdateConsumer);
     } else if (value instanceof Struct) {
-      return ((Struct) value).get(fieldName);
+      return convertToStruct((Struct) value, schema, parentFieldId, schemaUpdateConsumer);
     }
     throw new IllegalArgumentException("Cannot convert to struct: " + value.getClass().getName());
   }
 
-  protected List<Object> convertListValue(Object value, ListType type) {
+  /**
+   * This method will be called for records when there is no record schema. Also, when there is no
+   * schema, we infer that map values are struct types. This method might also be called if the
+   * field value is a map but the Iceberg type is a struct. This can happen if the Iceberg table
+   * schema is not managed by the sink, i.e. created manually.
+   */
+  private GenericRecord convertToStruct(
+      Map<?, ?> map,
+      StructType schema,
+      int structFieldId,
+      SchemaUpdate.Consumer schemaUpdateConsumer) {
+    GenericRecord result = GenericRecord.create(schema);
+    map.forEach(
+        (recordFieldNameObj, recordFieldValue) -> {
+          String recordFieldName = recordFieldNameObj.toString();
+          NestedField tableField = lookupStructField(recordFieldName, schema, structFieldId);
+          if (tableField == null) {
+            // add the column if schema evolution is on, otherwise skip the value,
+            // skip the add column if we can't infer the type
+            if (schemaUpdateConsumer != null) {
+              Type type = SchemaUtils.inferIcebergType(recordFieldValue, config);
+              if (type != null) {
+                String parentFieldName =
+                    structFieldId < 0 ? null : tableSchema.findColumnName(structFieldId);
+                schemaUpdateConsumer.addColumn(parentFieldName, recordFieldName, type);
+              }
+            }
+          } else {
+            result.setField(
+                tableField.name(),
+                convertValue(
+                    recordFieldValue,
+                    tableField.type(),
+                    tableField.fieldId(),
+                    schemaUpdateConsumer));
+          }
+        });
+    return result;
+  }
+
+  /** This method will be called for records and struct values when there is a record schema. */
+  private GenericRecord convertToStruct(
+      Struct struct,
+      StructType schema,
+      int structFieldId,
+      SchemaUpdate.Consumer schemaUpdateConsumer) {
+    GenericRecord result = GenericRecord.create(schema);
+    struct
+        .schema()
+        .fields()
+        .forEach(
+            recordField -> {
+              NestedField tableField = lookupStructField(recordField.name(), schema, structFieldId);
+              if (tableField == null) {
+                // add the column if schema evolution is on, otherwise skip the value
+                if (schemaUpdateConsumer != null) {
+                  String parentFieldName =
+                      structFieldId < 0 ? null : tableSchema.findColumnName(structFieldId);
+                  Type type = SchemaUtils.toIcebergType(recordField.schema(), config);
+                  schemaUpdateConsumer.addColumn(parentFieldName, recordField.name(), type);
+                }
+              } else {
+                boolean hasSchemaUpdates = false;
+                if (schemaUpdateConsumer != null) {
+                  // update the type if needed and schema evolution is on
+                  PrimitiveType evolveDataType =
+                      SchemaUtils.needsDataTypeUpdate(tableField.type(), recordField.schema());
+                  if (evolveDataType != null) {
+                    String fieldName = tableSchema.findColumnName(tableField.fieldId());
+                    schemaUpdateConsumer.updateType(fieldName, evolveDataType);
+                    hasSchemaUpdates = true;
+                  }
+                  // make optional if needed and schema evolution is on
+                  if (tableField.isRequired() && recordField.schema().isOptional()) {
+                    String fieldName = tableSchema.findColumnName(tableField.fieldId());
+                    schemaUpdateConsumer.makeOptional(fieldName);
+                    hasSchemaUpdates = true;
+                  }
+                }
+                if (!hasSchemaUpdates) {
+                  result.setField(
+                      tableField.name(),
+                      convertValue(
+                          struct.get(recordField),
+                          tableField.type(),
+                          tableField.fieldId(),
+                          schemaUpdateConsumer));
+                }
+              }
+            });
+    return result;
+  }
+
+  private NestedField lookupStructField(String fieldName, StructType schema, int structFieldId) {
+    if (nameMapping == null) {
+      return config.schemaCaseInsensitive()
+          ? schema.caseInsensitiveField(fieldName)
+          : schema.field(fieldName);
+    }
+
+    return structNameMap
+        .computeIfAbsent(structFieldId, notUsed -> createStructNameMap(schema))
+        .get(fieldName);
+  }
+
+  private Map<String, NestedField> createStructNameMap(StructType schema) {
+    Map<String, NestedField> map = Maps.newHashMap();
+    schema
+        .fields()
+        .forEach(
+            col -> {
+              MappedField mappedField = nameMapping.find(col.fieldId());
+              if (mappedField != null && !mappedField.names().isEmpty()) {
+                mappedField.names().forEach(name -> map.put(name, col));
+              } else {
+                map.put(col.name(), col);
+              }
+            });
+    return map;
+  }
+
+  protected List<Object> convertListValue(
+      Object value, ListType type, SchemaUpdate.Consumer schemaUpdateConsumer) {
     Preconditions.checkArgument(value instanceof List);
     List<?> list = (List<?>) value;
     return list.stream()
-        .map(element -> convertValue(element, type.elementType()))
-        .collect(toList());
+        .map(
+            element -> {
+              int fieldId = type.fields().get(0).fieldId();
+              return convertValue(element, type.elementType(), fieldId, schemaUpdateConsumer);
+            })
+        .collect(Collectors.toList());
   }
 
-  protected Map<Object, Object> convertMapValue(Object value, MapType type) {
+  protected Map<Object, Object> convertMapValue(
+      Object value, MapType type, SchemaUpdate.Consumer schemaUpdateConsumer) {
     Preconditions.checkArgument(value instanceof Map);
     Map<?, ?> map = (Map<?, ?>) value;
-    Map<Object, Object> result = new HashMap<>();
+    Map<Object, Object> result = Maps.newHashMap();
     map.forEach(
-        (k, v) -> result.put(convertValue(k, type.keyType()), convertValue(v, type.valueType())));
+        (k, v) -> {
+          int keyFieldId = type.fields().get(0).fieldId();
+          int valueFieldId = type.fields().get(1).fieldId();
+          result.put(
+              convertValue(k, type.keyType(), keyFieldId, schemaUpdateConsumer),
+              convertValue(v, type.valueType(), valueFieldId, schemaUpdateConsumer));
+        });
     return result;
   }
 
@@ -231,24 +346,24 @@ public class RecordConverter {
   }
 
   protected BigDecimal convertDecimal(Object value, DecimalType type) {
-    BigDecimal bd;
+    BigDecimal bigDecimal;
     if (value instanceof BigDecimal) {
-      bd = (BigDecimal) value;
+      bigDecimal = (BigDecimal) value;
     } else if (value instanceof Number) {
       Number num = (Number) value;
-      long l = num.longValue();
-      if (num.equals(l)) {
-        bd = BigDecimal.valueOf(num.longValue());
+      Double dbl = num.doubleValue();
+      if (dbl.equals(Math.floor(dbl))) {
+        bigDecimal = BigDecimal.valueOf(num.longValue());
       } else {
-        bd = BigDecimal.valueOf(num.doubleValue());
+        bigDecimal = BigDecimal.valueOf(dbl);
       }
     } else if (value instanceof String) {
-      bd = new BigDecimal((String) value);
+      bigDecimal = new BigDecimal((String) value);
     } else {
       throw new IllegalArgumentException(
           "Cannot convert to BigDecimal: " + value.getClass().getName());
     }
-    return bd.setScale(type.scale(), RoundingMode.HALF_UP);
+    return bigDecimal.setScale(type.scale(), RoundingMode.HALF_UP);
   }
 
   protected boolean convertBoolean(Object value) {
@@ -270,7 +385,7 @@ public class RecordConverter {
         return MAPPER.writeValueAsString(value);
       } else if (value instanceof Struct) {
         Struct struct = (Struct) value;
-        byte[] data = jsonConverter.fromConnectData(null, struct.schema(), struct);
+        byte[] data = config.jsonConverter().fromConnectData(null, struct.schema(), struct);
         return new String(data, StandardCharsets.UTF_8);
       }
     } catch (IOException e) {
@@ -279,13 +394,24 @@ public class RecordConverter {
     throw new IllegalArgumentException("Cannot convert to string: " + value.getClass().getName());
   }
 
-  protected UUID convertUUID(Object value) {
+  protected Object convertUUID(Object value) {
+    UUID uuid;
     if (value instanceof String) {
-      return UUID.fromString((String) value);
+      uuid = UUID.fromString((String) value);
     } else if (value instanceof UUID) {
-      return (UUID) value;
+      uuid = (UUID) value;
+    } else {
+      throw new IllegalArgumentException("Cannot convert to UUID: " + value.getClass().getName());
     }
-    throw new IllegalArgumentException("Cannot convert to UUID: " + value.getClass().getName());
+
+    if (FileFormat.PARQUET
+        .name()
+        .toLowerCase(Locale.ROOT)
+        .equals(config.writeProps().get(TableProperties.DEFAULT_FILE_FORMAT))) {
+      return UUIDUtil.convert(uuid);
+    } else {
+      return uuid;
+    }
   }
 
   protected ByteBuffer convertBase64Binary(Object value) {
@@ -299,67 +425,110 @@ public class RecordConverter {
     throw new IllegalArgumentException("Cannot convert to binary: " + value.getClass().getName());
   }
 
+  @SuppressWarnings("JavaUtilDate")
   protected LocalDate convertDateValue(Object value) {
     if (value instanceof Number) {
-      int i = ((Number) value).intValue();
-      return DateTimeUtil.dateFromDays(i);
+      int days = ((Number) value).intValue();
+      return DateTimeUtil.dateFromDays(days);
     } else if (value instanceof String) {
       return LocalDate.parse((String) value);
     } else if (value instanceof LocalDate) {
       return (LocalDate) value;
+    } else if (value instanceof Date) {
+      int days = (int) (((Date) value).getTime() / 1000 / 60 / 60 / 24);
+      return DateTimeUtil.dateFromDays(days);
     }
-    throw new RuntimeException("Cannot convert date: " + value);
+    throw new ConnectException("Cannot convert date: " + value);
   }
 
+  @SuppressWarnings("JavaUtilDate")
   protected LocalTime convertTimeValue(Object value) {
     if (value instanceof Number) {
-      long l = ((Number) value).longValue();
-      return DateTimeUtil.timeFromMicros(l * 1000);
+      long millis = ((Number) value).longValue();
+      return DateTimeUtil.timeFromMicros(millis * 1000);
     } else if (value instanceof String) {
       return LocalTime.parse((String) value);
     } else if (value instanceof LocalTime) {
       return (LocalTime) value;
+    } else if (value instanceof Date) {
+      long millis = ((Date) value).getTime();
+      return DateTimeUtil.timeFromMicros(millis * 1000);
     }
-    throw new RuntimeException("Cannot convert time: " + value);
+    throw new ConnectException("Cannot convert time: " + value);
   }
 
   protected Temporal convertTimestampValue(Object value, TimestampType type) {
-    // TODO: support non-ISO format, e.g. ' ' instead of 'T'
     if (type.shouldAdjustToUTC()) {
-      if (value instanceof Number) {
-        long l = ((Number) value).longValue();
-        return DateTimeUtil.timestamptzFromMicros(l * 1000);
-      } else if (value instanceof String) {
-        return parseOffsetDateTime((String) value);
-      } else if (value instanceof OffsetDateTime) {
-        return (OffsetDateTime) value;
-      }
-    } else {
-      if (value instanceof Number) {
-        long l = ((Number) value).longValue();
-        return DateTimeUtil.timestampFromMicros(l * 1000);
-      } else if (value instanceof String) {
-        return parseLocalDateTime((String) value);
-      } else if (value instanceof LocalDateTime) {
-        return (LocalDateTime) value;
-      }
+      return convertOffsetDateTime(value);
     }
-    throw new RuntimeException("Cannot convert timestamp: " + value);
+    return convertLocalDateTime(value);
+  }
+
+  @SuppressWarnings("JavaUtilDate")
+  private OffsetDateTime convertOffsetDateTime(Object value) {
+    if (value instanceof Number) {
+      long millis = ((Number) value).longValue();
+      return DateTimeUtil.timestamptzFromMicros(millis * 1000);
+    } else if (value instanceof String) {
+      return parseOffsetDateTime((String) value);
+    } else if (value instanceof OffsetDateTime) {
+      return (OffsetDateTime) value;
+    } else if (value instanceof LocalDateTime) {
+      return ((LocalDateTime) value).atOffset(ZoneOffset.UTC);
+    } else if (value instanceof Date) {
+      return DateTimeUtil.timestamptzFromMicros(((Date) value).getTime() * 1000);
+    }
+    throw new ConnectException(
+        "Cannot convert timestamptz: " + value + ", type: " + value.getClass());
   }
 
   private OffsetDateTime parseOffsetDateTime(String str) {
+    String tsStr = ensureTimestampFormat(str);
     try {
-      return OffsetDateTime.parse(str, ISO_OFFSET_DATE_TIME);
+      return OFFSET_TIMESTAMP_FORMAT.parse(tsStr, OffsetDateTime::from);
     } catch (DateTimeParseException e) {
-      return LocalDateTime.parse(str, ISO_LOCAL_DATE_TIME).atOffset(ZoneOffset.UTC);
+      return LocalDateTime.parse(tsStr, DateTimeFormatter.ISO_LOCAL_DATE_TIME)
+          .atOffset(ZoneOffset.UTC);
     }
   }
 
-  private LocalDateTime parseLocalDateTime(String str) {
-    try {
-      return LocalDateTime.parse(str, ISO_LOCAL_DATE_TIME);
-    } catch (DateTimeParseException e) {
-      return OffsetDateTime.parse(str, ISO_OFFSET_DATE_TIME).toLocalDateTime();
+  @SuppressWarnings("JavaUtilDate")
+  private LocalDateTime convertLocalDateTime(Object value) {
+    if (value instanceof Number) {
+      long millis = ((Number) value).longValue();
+      return DateTimeUtil.timestampFromMicros(millis * 1000);
+    } else if (value instanceof String) {
+      return parseLocalDateTime((String) value);
+    } else if (value instanceof LocalDateTime) {
+      return (LocalDateTime) value;
+    } else if (value instanceof OffsetDateTime) {
+      return ((OffsetDateTime) value).toLocalDateTime();
+    } else if (value instanceof Date) {
+      return DateTimeUtil.timestampFromMicros(((Date) value).getTime() * 1000);
     }
+    throw new ConnectException(
+        "Cannot convert timestamp: " + value + ", type: " + value.getClass());
+  }
+
+  private LocalDateTime parseLocalDateTime(String str) {
+    String tsStr = ensureTimestampFormat(str);
+    try {
+      return LocalDateTime.parse(tsStr, DateTimeFormatter.ISO_LOCAL_DATE_TIME);
+    } catch (DateTimeParseException e) {
+      return OFFSET_TIMESTAMP_FORMAT.parse(tsStr, OffsetDateTime::from).toLocalDateTime();
+    }
+  }
+
+  private String ensureTimestampFormat(String str) {
+    String result = str;
+    if (result.charAt(10) == ' ') {
+      result = result.substring(0, 10) + 'T' + result.substring(11);
+    }
+    if (result.length() > 22
+        && (result.charAt(19) == '+' || result.charAt(19) == '-')
+        && result.charAt(22) == ':') {
+      result = result.substring(0, 19) + result.substring(19).replace(":", "");
+    }
+    return result;
   }
 }

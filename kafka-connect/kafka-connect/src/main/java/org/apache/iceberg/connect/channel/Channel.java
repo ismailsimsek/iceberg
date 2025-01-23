@@ -18,110 +18,106 @@
  */
 package org.apache.iceberg.connect.channel;
 
-import io.tabular.iceberg.connect.IcebergSinkConfig;
-import io.tabular.iceberg.connect.channel.events.Event;
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.time.Duration;
-import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.function.Consumer;
-import org.apache.iceberg.avro.AvroEncoderUtil;
+import java.util.stream.Collectors;
+import org.apache.iceberg.connect.IcebergSinkConfig;
+import org.apache.iceberg.connect.data.Offset;
+import org.apache.iceberg.connect.events.AvroUtil;
+import org.apache.iceberg.connect.events.Event;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
+import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.kafka.clients.admin.Admin;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.consumer.ConsumerGroupMetadata;
-import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+import org.apache.kafka.clients.consumer.Consumer;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
-import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
-import org.apache.kafka.common.serialization.ByteArrayDeserializer;
-import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.connect.sink.SinkTaskContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static java.util.stream.Collectors.toList;
-
-public abstract class Channel {
+abstract class Channel {
 
   private static final Logger LOG = LoggerFactory.getLogger(Channel.class);
 
-  protected final Map<String, String> kafkaProps;
   private final String controlTopic;
-  private final String controlGroupId;
-  private final String transactionalId;
-  private final KafkaProducer<byte[], byte[]> producer;
-  private final KafkaConsumer<byte[], byte[]> consumer;
+  private final String connectGroupId;
+  private final Producer<String, byte[]> producer;
+  private final Consumer<String, byte[]> consumer;
+  private final SinkTaskContext context;
   private final Admin admin;
-  private final Map<Integer, Long> controlTopicOffsets = new HashMap<>();
+  private final Map<Integer, Long> controlTopicOffsets = Maps.newHashMap();
+  private final String producerId;
 
-  public Channel(String name, IcebergSinkConfig config) {
-    this.kafkaProps = config.getKafkaProps();
-    this.controlTopic = config.getControlTopic();
-    this.controlGroupId = config.getControlGroupId();
-    this.transactionalId = name + config.getTransactionalSuffix();
-    this.producer = createProducer();
-    this.consumer = createConsumer();
-    this.admin = createAdmin();
+  Channel(
+      String name,
+      String consumerGroupId,
+      IcebergSinkConfig config,
+      KafkaClientFactory clientFactory,
+      SinkTaskContext context) {
+    this.controlTopic = config.controlTopic();
+    this.connectGroupId = config.connectGroupId();
+    this.context = context;
+
+    String transactionalId = name + config.transactionalSuffix();
+    this.producer = clientFactory.createProducer(transactionalId);
+    this.consumer = clientFactory.createConsumer(consumerGroupId);
+    this.admin = clientFactory.createAdmin();
+
+    this.producerId = UUID.randomUUID().toString();
   }
 
   protected void send(Event event) {
     send(ImmutableList.of(event), ImmutableMap.of());
   }
 
-  protected void send(List<Event> events, Map<TopicPartition, Long> sourceOffsets) {
-    Map<TopicPartition, OffsetAndMetadata> offsetsToCommit = new HashMap<>();
-    sourceOffsets.forEach((k, v) -> offsetsToCommit.put(k, new OffsetAndMetadata(v)));
+  @SuppressWarnings("FutureReturnValueIgnored")
+  protected void send(List<Event> events, Map<TopicPartition, Offset> sourceOffsets) {
+    Map<TopicPartition, OffsetAndMetadata> offsetsToCommit = Maps.newHashMap();
+    sourceOffsets.forEach((k, v) -> offsetsToCommit.put(k, new OffsetAndMetadata(v.offset())));
 
-    List<ProducerRecord<byte[], byte[]>> recordList =
+    List<ProducerRecord<String, byte[]>> recordList =
         events.stream()
             .map(
                 event -> {
-                  LOG.info("Sending event of type: {}", event.getType().name());
-                  try {
-                    byte[] data = AvroEncoderUtil.encode(event, event.getSchema());
-                    return new ProducerRecord<byte[], byte[]>(controlTopic, data);
-                  } catch (IOException e) {
-                    throw new UncheckedIOException(e);
-                  }
+                  LOG.info("Sending event of type: {}", event.type().name());
+                  byte[] data = AvroUtil.encode(event);
+                  // key by producer ID to keep event order
+                  return new ProducerRecord<>(controlTopic, producerId, data);
                 })
-            .collect(toList());
+            .collect(Collectors.toList());
 
-    producer.beginTransaction();
-    try {
-      recordList.forEach(producer::send);
-      if (!sourceOffsets.isEmpty()) {
-        // TODO: this doesn't fence zombies
-        producer.sendOffsetsToTransaction(
-            offsetsToCommit, new ConsumerGroupMetadata(controlGroupId));
+    synchronized (producer) {
+      producer.beginTransaction();
+      try {
+        // NOTE: we shouldn't call get() on the future in a transactional context,
+        // see docs for org.apache.kafka.clients.producer.KafkaProducer
+        recordList.forEach(producer::send);
+        if (!sourceOffsets.isEmpty()) {
+          producer.sendOffsetsToTransaction(
+              offsetsToCommit, KafkaUtils.consumerGroupMetadata(context));
+        }
+        producer.commitTransaction();
+      } catch (Exception e) {
+        try {
+          producer.abortTransaction();
+        } catch (Exception ex) {
+          LOG.warn("Error aborting producer transaction", ex);
+        }
+        throw e;
       }
-      producer.commitTransaction();
-    } catch (Exception e) {
-      producer.abortTransaction();
-      throw e;
     }
   }
 
-  protected abstract void receive(Envelope envelope);
+  protected abstract boolean receive(Envelope envelope);
 
-  public void process() {
-    consumeAvailable(this::receive, Duration.ZERO);
-  }
-
-  protected void process(Duration duration) {
-    consumeAvailable(this::receive, duration);
-  }
-
-  protected void consumeAvailable(Consumer<Envelope> eventHandler, Duration pollDuration) {
-    ConsumerRecords<byte[], byte[]> records = consumer.poll(pollDuration);
+  protected void consumeAvailable(Duration pollDuration) {
+    ConsumerRecords<String, byte[]> records = consumer.poll(pollDuration);
     while (!records.isEmpty()) {
       records.forEach(
           record -> {
@@ -129,15 +125,14 @@ public abstract class Channel {
             // so increment the record offset by one
             controlTopicOffsets.put(record.partition(), record.offset() + 1);
 
-            Event event;
-            try {
-              event = AvroEncoderUtil.decode(record.value());
-            } catch (IOException e) {
-              throw new UncheckedIOException(e);
-            }
+            Event event = AvroUtil.decode(record.value());
 
-            LOG.info("Received event of type: {}", event.getType().name());
-            eventHandler.accept(new Envelope(event, record.partition(), record.offset()));
+            if (event.groupId().equals(connectGroupId)) {
+              LOG.debug("Received event of type: {}", event.type().name());
+              if (receive(new Envelope(event, record.partition(), record.offset()))) {
+                LOG.info("Handled event of type: {}", event.type().name());
+              }
+            }
           });
       records = consumer.poll(pollDuration);
     }
@@ -147,61 +142,23 @@ public abstract class Channel {
     return controlTopicOffsets;
   }
 
-  private KafkaProducer<byte[], byte[]> createProducer() {
-    Map<String, Object> producerProps = new HashMap<>(kafkaProps);
-    producerProps.put(ProducerConfig.TRANSACTIONAL_ID_CONFIG, transactionalId);
-    KafkaProducer<byte[], byte[]> result =
-        new KafkaProducer<>(producerProps, new ByteArraySerializer(), new ByteArraySerializer());
-    result.initTransactions();
-    return result;
+  protected void commitConsumerOffsets() {
+    Map<TopicPartition, OffsetAndMetadata> offsetsToCommit = Maps.newHashMap();
+    controlTopicOffsets()
+        .forEach(
+            (k, v) ->
+                offsetsToCommit.put(new TopicPartition(controlTopic, k), new OffsetAndMetadata(v)));
+    consumer.commitSync(offsetsToCommit);
   }
 
-  private KafkaConsumer<byte[], byte[]> createConsumer() {
-    Map<String, Object> consumerProps = new HashMap<>(kafkaProps);
-    consumerProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-    consumerProps.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "none");
-    consumerProps.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");
-    consumerProps.put(ConsumerConfig.GROUP_ID_CONFIG, "cg-control-" + UUID.randomUUID());
-    return new KafkaConsumer<>(
-        consumerProps, new ByteArrayDeserializer(), new ByteArrayDeserializer());
-  }
-
-  private Admin createAdmin() {
-    Map<String, Object> adminProps = new HashMap<>(kafkaProps);
-    return Admin.create(adminProps);
-  }
-
-  protected void setControlTopicOffsets(Map<Integer, Long> offsets) {
-    offsets.forEach(
-        (k, v) -> consumer.seek(new TopicPartition(controlTopic, k), new OffsetAndMetadata(v)));
-  }
-
-  protected Admin admin() {
-    return admin;
-  }
-
-  protected void initConsumerOffsets(Collection<TopicPartition> partitions) {
-    consumer.seekToEnd(partitions);
-  }
-
-  public void start() {
-    consumer.subscribe(
-        ImmutableList.of(controlTopic),
-        new ConsumerRebalanceListener() {
-          @Override
-          public void onPartitionsRevoked(Collection<TopicPartition> partitions) {}
-
-          @Override
-          public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
-            initConsumerOffsets(partitions);
-          }
-        });
+  void start() {
+    consumer.subscribe(ImmutableList.of(controlTopic));
 
     // initial poll with longer duration so the consumer will initialize...
-    process(Duration.ofMillis(1000));
+    consumeAvailable(Duration.ofSeconds(1));
   }
 
-  public void stop() {
+  void stop() {
     LOG.info("Channel stopping");
     producer.close();
     consumer.close();
