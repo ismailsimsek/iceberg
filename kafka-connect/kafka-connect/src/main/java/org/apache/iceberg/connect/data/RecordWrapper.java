@@ -18,7 +18,7 @@
  */
 package org.apache.iceberg.connect.data;
 
-import io.tabular.iceberg.connect.data.Operation;
+import org.apache.iceberg.connect.data.Operation;
 import java.util.Map;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.types.Types.StructType;

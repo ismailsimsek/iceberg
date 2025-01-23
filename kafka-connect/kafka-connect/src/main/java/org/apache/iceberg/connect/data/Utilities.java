@@ -18,10 +18,10 @@
  */
 package org.apache.iceberg.connect.data;
 
-import io.tabular.iceberg.connect.IcebergSinkConfig;
-import io.tabular.iceberg.connect.data.PartitionedAppendWriter;
-import io.tabular.iceberg.connect.data.PartitionedDeltaWriter;
-import io.tabular.iceberg.connect.data.UnpartitionedDeltaWriter;
+import org.apache.iceberg.connect.IcebergSinkConfig;
+import org.apache.iceberg.connect.data.PartitionedAppendWriter;
+import org.apache.iceberg.connect.data.PartitionedDeltaWriter;
+import org.apache.iceberg.connect.data.UnpartitionedDeltaWriter;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.net.URL;

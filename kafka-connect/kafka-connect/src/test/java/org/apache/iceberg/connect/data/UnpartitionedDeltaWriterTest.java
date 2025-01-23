@@ -18,9 +18,9 @@
  */
 package org.apache.iceberg.connect.data;
 
-import io.tabular.iceberg.connect.IcebergSinkConfig;
-import io.tabular.iceberg.connect.data.BaseWriterTest;
-import io.tabular.iceberg.connect.data.UnpartitionedDeltaWriter;
+import org.apache.iceberg.connect.IcebergSinkConfig;
+import org.apache.iceberg.connect.data.BaseWriterTest;
+import org.apache.iceberg.connect.data.UnpartitionedDeltaWriter;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.WriteResult;
