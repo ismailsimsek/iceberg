@@ -16,13 +16,15 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.channel.events;
+package org.apache.iceberg.connect.channel.events;
 
-import static org.apache.iceberg.avro.AvroSchemaUtil.FIELD_ID_PROP;
-
+import io.tabular.iceberg.connect.channel.events.Element;
+import io.tabular.iceberg.connect.channel.events.EventType;
 import java.util.UUID;
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
+
+import static org.apache.iceberg.avro.AvroSchemaUtil.FIELD_ID_PROP;
 
 public class Event implements Element {
 

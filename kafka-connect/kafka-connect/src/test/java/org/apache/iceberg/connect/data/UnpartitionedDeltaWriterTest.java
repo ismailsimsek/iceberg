@@ -16,38 +16,38 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.data;
-
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.mockito.Mockito.mock;
+package org.apache.iceberg.connect.data;
 
 import io.tabular.iceberg.connect.IcebergSinkConfig;
+import io.tabular.iceberg.connect.data.BaseWriterTest;
+import io.tabular.iceberg.connect.data.UnpartitionedDeltaWriter;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
-import org.apache.iceberg.io.UnpartitionedWriter;
 import org.apache.iceberg.io.WriteResult;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.junit.jupiter.api.Test;
 
-public class UnpartitionedWriterTest extends BaseWriterTest {
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
+public class UnpartitionedDeltaWriterTest extends BaseWriterTest {
 
   @Test
-  public void testUnpartitionedWriter() {
+  public void testUnpartitionedDeltaWriter() {
     IcebergSinkConfig config = mock(IcebergSinkConfig.class);
+    when(config.isUpsertMode()).thenReturn(true);
 
-    Record row1 = GenericRecord.create(SCHEMA);
-    row1.setField("id", 123L);
-    row1.setField("data", "hello world!");
-    row1.setField("id2", 123L);
+    Record row = GenericRecord.create(SCHEMA);
+    row.setField("id", 123L);
+    row.setField("data", "hello world!");
+    row.setField("id2", 123L);
 
-    Record row2 = GenericRecord.create(SCHEMA);
-    row2.setField("id", 234L);
-    row2.setField("data", "foobar");
-    row2.setField("id2", 234L);
+    WriteResult result = writeTest(ImmutableList.of(row), config, UnpartitionedDeltaWriter.class);
 
-    WriteResult result = writeTest(ImmutableList.of(row1, row2), config, UnpartitionedWriter.class);
-
+    // in upsert mode, each write is a delete + append, so we'll have 1 data file
+    // and 1 delete file
     assertEquals(1, result.dataFiles().length);
-    assertEquals(0, result.deleteFiles().length);
+    assertEquals(1, result.deleteFiles().length);
   }
 }

@@ -16,61 +16,41 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.channel.events;
+package org.apache.iceberg.connect.channel.events;
 
-import static java.util.stream.Collectors.toList;
-import static org.apache.iceberg.avro.AvroSchemaUtil.FIELD_ID_PROP;
-
-import java.util.Arrays;
-import java.util.List;
+import io.tabular.iceberg.connect.channel.events.Payload;
+import java.util.UUID;
 import org.apache.avro.Schema;
 import org.apache.avro.SchemaBuilder;
-import org.apache.avro.util.Utf8;
-import org.apache.iceberg.catalog.Namespace;
-import org.apache.iceberg.catalog.TableIdentifier;
 
-public class TableName implements Element {
+import static org.apache.iceberg.avro.AvroSchemaUtil.FIELD_ID_PROP;
 
-  private List<String> namespace;
-  private String name;
+public class CommitRequestPayload implements Payload {
+
+  private UUID commitId;
   private Schema avroSchema;
 
   public static final Schema AVRO_SCHEMA =
       SchemaBuilder.builder()
-          .record(TableName.class.getName())
+          .record(CommitRequestPayload.class.getName())
           .fields()
-          .name("namespace")
+          .name("commitId")
           .prop(FIELD_ID_PROP, DUMMY_FIELD_ID)
-          .type()
-          .array()
-          .items()
-          .stringType()
-          .noDefault()
-          .name("name")
-          .prop(FIELD_ID_PROP, DUMMY_FIELD_ID)
-          .type()
-          .stringType()
+          .type(UUID_SCHEMA)
           .noDefault()
           .endRecord();
 
-  public static TableName of(TableIdentifier tableIdentifier) {
-    return new TableName(
-        Arrays.asList(tableIdentifier.namespace().levels()), tableIdentifier.name());
-  }
-
-  public TableName(Schema avroSchema) {
+  public CommitRequestPayload(Schema avroSchema) {
     this.avroSchema = avroSchema;
   }
 
-  public TableName(List<String> namespace, String name) {
-    this.namespace = namespace;
-    this.name = name;
+  public CommitRequestPayload(UUID commitId) {
+    this.commitId = commitId;
     this.avroSchema = AVRO_SCHEMA;
   }
 
-  public TableIdentifier toIdentifier() {
-    Namespace icebergNamespace = Namespace.of(namespace.toArray(new String[0]));
-    return TableIdentifier.of(icebergNamespace, name);
+  public UUID getCommitId() {
+    return commitId;
   }
 
   @Override
@@ -79,15 +59,10 @@ public class TableName implements Element {
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public void put(int i, Object v) {
     switch (i) {
       case 0:
-        this.namespace =
-            v == null ? null : ((List<Utf8>) v).stream().map(Utf8::toString).collect(toList());
-        return;
-      case 1:
-        this.name = v == null ? null : v.toString();
+        this.commitId = (UUID) v;
         return;
       default:
         // ignore the object, it must be from a newer version of the format
@@ -98,9 +73,7 @@ public class TableName implements Element {
   public Object get(int i) {
     switch (i) {
       case 0:
-        return namespace;
-      case 1:
-        return name;
+        return commitId;
       default:
         throw new UnsupportedOperationException("Unknown field ordinal: " + i);
     }

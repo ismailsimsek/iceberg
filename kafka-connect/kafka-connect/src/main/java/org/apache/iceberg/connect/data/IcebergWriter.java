@@ -18,86 +18,96 @@
  */
 package org.apache.iceberg.connect.data;
 
+import io.tabular.iceberg.connect.IcebergSinkConfig;
+import io.tabular.iceberg.connect.data.Operation;
+import io.tabular.iceberg.connect.data.RecordWrapper;
+import io.tabular.iceberg.connect.data.Utilities;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Arrays;
-import java.util.List;
-import java.util.Locale;
+import java.util.HashMap;
+import java.util.Map;
 import org.apache.iceberg.Table;
+import org.apache.iceberg.catalog.Catalog;
 import org.apache.iceberg.catalog.TableIdentifier;
-import org.apache.iceberg.connect.IcebergSinkConfig;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.TaskWriter;
 import org.apache.iceberg.io.WriteResult;
-import org.apache.iceberg.relocated.com.google.common.collect.Lists;
-import org.apache.kafka.connect.errors.DataException;
+import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.connect.data.Struct;
 import org.apache.kafka.connect.sink.SinkRecord;
 
-class IcebergWriter implements RecordWriter {
+public class IcebergWriter implements Closeable {
   private final Table table;
-  private final String tableName;
+  private final TableIdentifier tableIdentifier;
   private final IcebergSinkConfig config;
-  private final List<IcebergWriterResult> writerResults;
-
   private RecordConverter recordConverter;
   private TaskWriter<Record> writer;
+  private Map<TopicPartition, Long> offsets;
 
-  IcebergWriter(Table table, String tableName, IcebergSinkConfig config) {
-    this.table = table;
-    this.tableName = tableName;
+  public IcebergWriter(Catalog catalog, String tableName, IcebergSinkConfig config) {
+    this.tableIdentifier = TableIdentifier.parse(tableName);
+    this.table = catalog.loadTable(tableIdentifier);
     this.config = config;
-    this.writerResults = Lists.newArrayList();
-    initNewWriter();
+    this.recordConverter = new RecordConverter(table);
+    this.writer = Utilities.createTableWriter(table, config);
+    this.offsets = new HashMap<>();
   }
 
-  private void initNewWriter() {
-    this.writer = RecordUtils.createTableWriter(table, tableName, config);
-    this.recordConverter = new RecordConverter(table, config);
-  }
-
-  @Override
   public void write(SinkRecord record) {
+    // the consumer stores the offsets that corresponds to the next record to consume,
+    // so increment the record offset by one
+    offsets.put(
+        new TopicPartition(record.topic(), record.kafkaPartition()), record.kafkaOffset() + 1);
     try {
-      // ignore tombstones...
+      // TODO: config to handle tombstones instead of always ignoring?
       if (record.value() != null) {
-        Record row = convertToRow(record);
-        writer.write(row);
+        Record row = recordConverter.convert(record.value());
+        String cdcField = config.getTablesCdcField();
+        if (cdcField == null) {
+          writer.write(row);
+        } else {
+          Operation op = extractCdcOperation(record.value(), cdcField);
+          writer.write(new RecordWrapper(row, op));
+        }
       }
-    } catch (Exception e) {
-      throw new DataException(
-          String.format(
-              Locale.ROOT,
-              "An error occurred converting record, topic: %s, partition, %d, offset: %d",
-              record.topic(),
-              record.kafkaPartition(),
-              record.kafkaOffset()),
-          e);
+    } catch (IOException e) {
+      throw new UncheckedIOException(e);
     }
   }
 
-  private Record convertToRow(SinkRecord record) {
-    if (!config.evolveSchemaEnabled()) {
-      return recordConverter.convert(record.value());
+  private Operation extractCdcOperation(Object recordValue, String cdcField) {
+    Object opValue;
+    if (recordValue instanceof Struct) {
+      opValue = ((Struct) recordValue).get(cdcField);
+    } else if (recordValue instanceof Map) {
+      opValue = ((Map<?, ?>) recordValue).get(cdcField);
+    } else {
+      throw new UnsupportedOperationException(
+          "Cannot extract value from type: " + recordValue.getClass().getName());
     }
 
-    SchemaUpdate.Consumer updates = new SchemaUpdate.Consumer();
-    Record row = recordConverter.convert(record.value(), updates);
-
-    if (!updates.empty()) {
-      // complete the current file
-      flush();
-      // apply the schema updates, this will refresh the table
-      SchemaUtils.applySchemaUpdates(table, updates);
-      // initialize a new writer with the new schema
-      initNewWriter();
-      // convert the row again, this time using the new table schema
-      row = recordConverter.convert(record.value(), null);
+    if (opValue == null) {
+      return Operation.INSERT;
     }
 
-    return row;
+    // FIXME!! define mapping in config!!
+
+    String opStr = opValue.toString().toUpperCase();
+    switch (opStr) {
+      case "UPDATE":
+      case "U":
+        return Operation.UPDATE;
+      case "DELETE":
+      case "D":
+        return Operation.DELETE;
+      default:
+        return Operation.INSERT;
+    }
   }
 
-  private void flush() {
+  public WriterResult complete() {
     WriteResult writeResult;
     try {
       writeResult = writer.complete();
@@ -105,20 +115,18 @@ class IcebergWriter implements RecordWriter {
       throw new UncheckedIOException(e);
     }
 
-    writerResults.add(
-        new IcebergWriterResult(
-            TableIdentifier.parse(tableName),
+    WriterResult result =
+        new WriterResult(
+            tableIdentifier,
             Arrays.asList(writeResult.dataFiles()),
             Arrays.asList(writeResult.deleteFiles()),
-            table.spec().partitionType()));
-  }
+            table.spec().partitionType(),
+            offsets);
 
-  @Override
-  public List<IcebergWriterResult> complete() {
-    flush();
-
-    List<IcebergWriterResult> result = Lists.newArrayList(writerResults);
-    writerResults.clear();
+    table.refresh();
+    recordConverter = new RecordConverter(table);
+    writer = Utilities.createTableWriter(table, config);
+    offsets = new HashMap<>();
 
     return result;
   }

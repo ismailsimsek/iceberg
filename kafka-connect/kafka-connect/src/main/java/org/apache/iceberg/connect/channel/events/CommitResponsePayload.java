@@ -16,10 +16,9 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.channel.events;
+package org.apache.iceberg.connect.channel.events;
 
-import static org.apache.iceberg.avro.AvroSchemaUtil.FIELD_ID_PROP;
-
+import io.tabular.iceberg.connect.channel.events.TopicPartitionOffset;
 import java.util.List;
 import java.util.UUID;
 import org.apache.avro.Schema;
@@ -29,6 +28,8 @@ import org.apache.iceberg.DeleteFile;
 import org.apache.iceberg.avro.AvroSchemaUtil;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types.StructType;
+
+import static org.apache.iceberg.avro.AvroSchemaUtil.FIELD_ID_PROP;
 
 public class CommitResponsePayload implements Payload {
 

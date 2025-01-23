@@ -16,6 +16,8 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.channel.events;
+package org.apache.iceberg.connect.channel.events;
+
+import io.tabular.iceberg.connect.channel.events.Element;
 
 public interface Payload extends Element {}

@@ -16,30 +16,19 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.channel;
+package org.apache.iceberg.connect.channel.events;
 
-import io.tabular.iceberg.connect.channel.events.Event;
+public enum EventType {
+  COMMIT_REQUEST(0),
+  COMMIT_RESPONSE(1);
 
-public class Envelope {
-  private final Event event;
-  private final int partition;
-  private final long offset;
+  private final int id;
 
-  public Envelope(Event event, int partition, long offset) {
-    this.event = event;
-    this.partition = partition;
-    this.offset = offset;
+  EventType(int id) {
+    this.id = id;
   }
 
-  public Event getEvent() {
-    return event;
-  }
-
-  public int getPartition() {
-    return partition;
-  }
-
-  public long getOffset() {
-    return offset;
+  public int getId() {
+    return id;
   }
 }

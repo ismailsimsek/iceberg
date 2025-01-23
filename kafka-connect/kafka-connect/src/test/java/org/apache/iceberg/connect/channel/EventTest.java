@@ -16,11 +16,7 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.channel.events;
-
-import static org.apache.iceberg.types.Types.NestedField.required;
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.assertEquals;
+package org.apache.iceberg.connect.channel;
 
 import java.nio.ByteBuffer;
 import java.util.List;
@@ -39,6 +35,8 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types.StringType;
 import org.apache.iceberg.types.Types.StructType;
 import org.junit.jupiter.api.Test;
+
+import static org.apache.iceberg.types.Types.NestedField.required;
 
 public class EventTest {
 

@@ -18,28 +18,28 @@
  */
 package org.apache.iceberg.connect.channel;
 
-import org.apache.iceberg.connect.events.Event;
+import io.tabular.iceberg.connect.channel.events.Event;
 
-class Envelope {
+public class Envelope {
   private final Event event;
   private final int partition;
   private final long offset;
 
-  Envelope(Event event, int partition, long offset) {
+  public Envelope(Event event, int partition, long offset) {
     this.event = event;
     this.partition = partition;
     this.offset = offset;
   }
 
-  Event event() {
+  public Event getEvent() {
     return event;
   }
 
-  int partition() {
+  public int getPartition() {
     return partition;
   }
 
-  long offset() {
+  public long getOffset() {
     return offset;
   }
 }

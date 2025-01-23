@@ -18,30 +18,24 @@
  */
 package org.apache.iceberg.connect.data;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
-
-import org.apache.iceberg.FileFormat;
-import org.apache.iceberg.connect.IcebergSinkConfig;
-import org.apache.iceberg.connect.TableSinkConfig;
+import io.tabular.iceberg.connect.IcebergSinkConfig;
+import io.tabular.iceberg.connect.data.BaseWriterTest;
+import io.tabular.iceberg.connect.data.PartitionedAppendWriter;
 import org.apache.iceberg.data.GenericRecord;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.io.WriteResult;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
-import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.ValueSource;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class PartitionedAppendWriterTest extends BaseWriterTest {
 
-  @ParameterizedTest
-  @ValueSource(strings = {"parquet", "orc"})
-  public void testPartitionedAppendWriter(String format) {
+  @Test
+  public void testPartitionedAppendWriter() {
     IcebergSinkConfig config = mock(IcebergSinkConfig.class);
-    when(config.tableConfig(any())).thenReturn(mock(TableSinkConfig.class));
-    when(config.writeProps()).thenReturn(ImmutableMap.of("write.format.default", format));
 
     when(table.spec()).thenReturn(SPEC);
 
@@ -59,8 +53,7 @@ public class PartitionedAppendWriterTest extends BaseWriterTest {
         writeTest(ImmutableList.of(row1, row2), config, PartitionedAppendWriter.class);
 
     // 1 data file for each partition (2 total)
-    assertThat(result.dataFiles()).hasSize(2);
-    assertThat(result.dataFiles()).allMatch(file -> file.format() == FileFormat.fromString(format));
-    assertThat(result.deleteFiles()).hasSize(0);
+    assertEquals(2, result.dataFiles().length);
+    assertEquals(0, result.deleteFiles().length);
   }
 }

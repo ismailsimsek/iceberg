@@ -16,14 +16,13 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package io.tabular.iceberg.connect.data;
+package org.apache.iceberg.connect.data;
 
 import java.util.List;
 import java.util.Map;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.data.Record;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.types.Types;
 import org.apache.iceberg.types.Types.ListType;
 import org.apache.iceberg.types.Types.MapType;
 import org.apache.iceberg.types.Types.NestedField;
@@ -65,11 +64,11 @@ public class RecordProjection implements Record {
     // set up the projection positions and any nested projections that are needed
     List<NestedField> dataFields = structType.fields();
     for (int pos = 0; pos < positionMap.length; pos += 1) {
-      Types.NestedField projectedField = projection.fields().get(pos);
+      NestedField projectedField = projection.fields().get(pos);
 
       boolean found = false;
       for (int i = 0; !found && i < dataFields.size(); i += 1) {
-        Types.NestedField dataField = dataFields.get(i);
+        NestedField dataField = dataFields.get(i);
         if (projectedField.fieldId() == dataField.fieldId()) {
           found = true;
           positionMap[pos] = i;

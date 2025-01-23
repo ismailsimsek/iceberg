@@ -18,15 +18,18 @@
  */
 package org.apache.iceberg.connect;
 
+import io.tabular.iceberg.connect.IcebergSinkConfig;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 import java.util.stream.IntStream;
-import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.kafka.common.config.ConfigDef;
 import org.apache.kafka.connect.connector.Task;
 import org.apache.kafka.connect.sink.SinkConnector;
+
+import static io.tabular.iceberg.connect.IcebergSinkConfig.INTERNAL_TRANSACTIONAL_SUFFIX_PROP;
+import static java.util.stream.Collectors.toList;
 
 public class IcebergSinkConnector extends SinkConnector {
 
@@ -34,12 +37,12 @@ public class IcebergSinkConnector extends SinkConnector {
 
   @Override
   public String version() {
-    return IcebergSinkConfig.version();
+    return IcebergSinkConfig.getVersion();
   }
 
   @Override
-  public void start(Map<String, String> connectorProps) {
-    this.props = connectorProps;
+  public void start(Map<String, String> props) {
+    this.props = props;
   }
 
   @Override
@@ -49,15 +52,16 @@ public class IcebergSinkConnector extends SinkConnector {
 
   @Override
   public List<Map<String, String>> taskConfigs(int maxTasks) {
+    // TODO: use connector name instead of UUID
     String txnSuffix = "-txn-" + UUID.randomUUID() + "-";
     return IntStream.range(0, maxTasks)
         .mapToObj(
             i -> {
-              Map<String, String> map = Maps.newHashMap(props);
-              map.put(IcebergSinkConfig.INTERNAL_TRANSACTIONAL_SUFFIX_PROP, txnSuffix + i);
+              Map<String, String> map = new HashMap<>(props);
+              map.put(INTERNAL_TRANSACTIONAL_SUFFIX_PROP, txnSuffix + i);
               return map;
             })
-        .collect(Collectors.toList());
+        .collect(toList());
   }
 
   @Override
